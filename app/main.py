@@ -9,10 +9,10 @@ from fastapi.responses import JSONResponse
 from app.config_loader import load_scoring_weights, resolve_criterion_weight
 from app.extraction import extract_criteria
 from app.llm_client import LLMCallError, get_llm_config
-from app.models import ErrorResponse, ScoreResponse
+from app.models import CriterionScore, ErrorResponse, ScoreResponse
 from app.resume_parser import ResumeParseError, parse_resume
-from app.scoring import score_criteria, weighted_overall
-from app.storage import persist_run
+from app.scoring import check_suspicious_score, score_criteria, weighted_overall
+from app.storage import find_cached_run, persist_run
 
 # Load environment variables safely if .env exists
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -84,7 +84,17 @@ async def score_resume(
             content={"error": exc.error, "detail": exc.detail},
         )
 
-    # 2. LLM Call #1: Extract criteria from Job Description
+    # 2. Check local cache / idempotency (Master §5.5)
+    cached_record = await anyio.to_thread.run_sync(find_cached_run, cleaned_jd, resume_text)
+    if cached_record is not None:
+        return ScoreResponse(
+            overall_score=cached_record["overall_score"],
+            criteria=[CriterionScore(**c) for c in cached_record["criteria"]],
+            model_used=cached_record.get("model_used", "cached"),
+            run_id=cached_record.get("run_id", str(uuid.uuid4())),
+        )
+
+    # 3. LLM Call #1: Extract criteria from Job Description
     try:
         criteria = await extract_criteria(cleaned_jd)
     except LLMCallError as exc:
@@ -93,13 +103,13 @@ async def score_resume(
             content={"error": "llm_call_failed", "detail": f"Criteria extraction failed: {exc.message}"},
         )
 
-    # 3. Load external scoring weights (Master §2.2 Step 4, §2.5, F5)
-    weights_map, fallback_weight = load_scoring_weights()
+    # 4. Load external scoring weights (Master §2.2 Step 4, §2.5, F5)
+    weights_map, fallback_weight = await anyio.to_thread.run_sync(load_scoring_weights)
     for c in criteria:
         resolved = resolve_criterion_weight(c.name, c.weight_hint, weights_map, fallback_weight)
         c.weight_hint = resolved
 
-    # 4. LLM Call #2: Batched scoring of resume vs criteria
+    # 5. LLM Call #2: Batched scoring of resume vs criteria
     try:
         criterion_scores = await score_criteria(resume_text, criteria)
     except LLMCallError as exc:
@@ -108,30 +118,35 @@ async def score_resume(
             content={"error": "llm_call_failed", "detail": f"Resume scoring failed: {exc.message}"},
         )
 
-    # Ensure weights on scored criteria reflect external config
+    # Ensure weights on scored criteria reflect external config and output sanity check is applied
     for cs in criterion_scores:
         cs.weight = resolve_criterion_weight(cs.name, cs.weight, weights_map, fallback_weight)
+        if not cs.suspicious:
+            cs.suspicious = check_suspicious_score(cs.score, cs.reasoning, resume_text)
 
-    # 5. Deterministic weighted aggregation (pure Python, Master §2.2 Step 6, §4.5)
+    # 6. Deterministic weighted aggregation (pure Python, Master §2.2 Step 6, §4.5)
     overall_score = round(weighted_overall(criterion_scores), 2)
 
-    # 6. Metadata and PII-safe local persistence (Master §4.7, §5.6)
+    # 7. Metadata and PII-safe local persistence (Master §4.7, §5.6)
     llm_cfg = get_llm_config()
     model_used = llm_cfg.get("primary_model") or os.getenv("LLM_MODEL", "unknown")
     run_id = str(uuid.uuid4())
 
-    persist_run(
-        run_id=run_id,
-        jd_text=cleaned_jd,
-        resume_text=resume_text,
-        overall_score=overall_score,
-        model_used=model_used,
+    await anyio.to_thread.run_sync(
+        persist_run,
+        run_id,
+        cleaned_jd,
+        resume_text,
+        overall_score,
+        model_used,
+        [cs.model_dump() for cs in criterion_scores],
     )
 
-    # 7. Return structured ScoreResponse
+    # 8. Return structured ScoreResponse
     return ScoreResponse(
         overall_score=overall_score,
         criteria=criterion_scores,
         model_used=model_used,
         run_id=run_id,
     )
+

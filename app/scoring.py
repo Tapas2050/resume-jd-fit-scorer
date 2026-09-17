@@ -1,8 +1,10 @@
 import json
 import logging
 import os
+import re
 from typing import Any
 from pydantic import ValidationError
+
 
 from app.llm_client import LLMCallError, call_openrouter, get_llm_config
 from app.models import Criterion, CriterionScore
@@ -128,6 +130,36 @@ def validate_scoring_payload(
     return [validated_scores_by_name[c_name] for c_name in expected_names]
 
 
+def check_suspicious_score(score: float, reasoning: str, resume_text: str) -> bool:
+    """
+    Sanity check output per Master §5.1:
+    If a criterion receives a 100 score but its reasoning does not meaningfully
+    reference/evidence content from the resume, flag it as suspicious (suspicious: true).
+    Does not alter or clamp the score.
+    """
+    if score < 100.0:
+        return False
+
+    if not reasoning or len(reasoning.strip()) < 10:
+        return True
+
+    stop_words = {
+        "this", "that", "with", "from", "have", "been", "candidate", "resume",
+        "shows", "demonstrates", "experience", "criterion", "match", "explicit",
+        "strong", "years", "role", "roles", "skills", "skill", "very", "good", "well"
+    }
+    words = [
+        w.lower()
+        for w in re.findall(r"\b[A-Za-z0-9_]{4,}\b", reasoning)
+        if w.lower() not in stop_words
+    ]
+    if not words:
+        return True
+
+    resume_lower = resume_text.lower()
+    return not any(w in resume_lower for w in words)
+
+
 async def score_criteria(
     resume_text: str,
     criteria: list[Criterion],
@@ -155,6 +187,8 @@ async def score_criteria(
     prompt = build_scoring_prompt(cleaned_resume, criteria)
     temperature = 0.0
 
+
+
     # Attempt 1: Primary model
     primary_error: Exception | None = None
     try:
@@ -164,7 +198,10 @@ async def score_criteria(
             model=primary,
             temperature=temperature,
         )
-        return validate_scoring_payload(raw_output, criteria)
+        scores = validate_scoring_payload(raw_output, criteria)
+        for cs in scores:
+            cs.suspicious = check_suspicious_score(cs.score, cs.reasoning, cleaned_resume)
+        return scores
     except Exception as exc:
         primary_error = exc
         logger.warning(
@@ -186,7 +223,10 @@ async def score_criteria(
             model=fallback,
             temperature=temperature,
         )
-        return validate_scoring_payload(raw_output, criteria)
+        scores = validate_scoring_payload(raw_output, criteria)
+        for cs in scores:
+            cs.suspicious = check_suspicious_score(cs.score, cs.reasoning, cleaned_resume)
+        return scores
     except Exception as fallback_exc:
         logger.error(
             "Both primary model '%s' and fallback model '%s' failed criterion scoring.",
@@ -197,6 +237,7 @@ async def score_criteria(
             f"Both primary and fallback models failed criterion scoring. "
             f"Primary ('{primary}'): {primary_error}. Fallback ('{fallback}'): {fallback_exc}"
         ) from fallback_exc
+
 
 
 def weighted_overall(criteria_scores: list[CriterionScore]) -> float:

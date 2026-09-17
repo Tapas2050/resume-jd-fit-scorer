@@ -17,15 +17,12 @@ def mock_api_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_MODEL", "meta-llama/llama-3.1-70b-instruct")
     monkeypatch.setenv("FALLBACK_MODEL", "mistralai/mistral-7b-instruct")
 
-    # Redirect runs.jsonl to temporary path for test isolation
+    # Redirect runs.jsonl and metrics.jsonl to temporary path for test isolation
     test_runs_path = tmp_path / "test_runs.jsonl"
-    monkeypatch.setattr("app.main.persist_run", lambda **kwargs: _mock_persist_run(test_runs_path, **kwargs))
+    monkeypatch.setattr("app.storage.DEFAULT_RUNS_PATH", test_runs_path)
+    monkeypatch.setattr("app.llm_client.DEFAULT_METRICS_PATH", tmp_path / "test_metrics.jsonl")
     return test_runs_path
 
-
-def _mock_persist_run(storage_path: Path, **kwargs):
-    from app.storage import persist_run
-    return persist_run(storage_path=storage_path, **kwargs)
 
 
 def test_score_pipeline_happy_path(mock_api_env):

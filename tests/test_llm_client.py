@@ -12,13 +12,14 @@ from app.llm_client import (
 
 
 @pytest.fixture(autouse=True)
-def mock_openrouter_env(monkeypatch):
+def mock_openrouter_env(monkeypatch, tmp_path):
     """Ensure consistent test environment variables without real credentials."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-secret-key-12345")
     monkeypatch.setenv("LLM_MODEL", "meta-llama/llama-3.1-70b-instruct")
     monkeypatch.setenv("FALLBACK_MODEL", "mistralai/mistral-7b-instruct")
     monkeypatch.setenv("LLM_TEMPERATURE", "0")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "15")
+    monkeypatch.setattr("app.llm_client.DEFAULT_METRICS_PATH", tmp_path / "test_metrics.jsonl")
 
 
 def _build_mock_response(

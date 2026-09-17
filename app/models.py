@@ -14,6 +14,7 @@ class CriterionScore(BaseModel):
     score: float = Field(..., ge=0.0, le=100.0, description="Score bounded between 0 and 100")
     weight: float = Field(..., ge=0.0, description="Criterion scoring weight")
     reasoning: str = Field(..., description="Recruiter-actionable reasoning for score")
+    suspicious: bool = Field(default=False, description="Flagged true if score is 100 without evidence grounding (Master §5.1)")
 
 
 class ScoreResponse(BaseModel):

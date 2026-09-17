@@ -4,12 +4,16 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 import httpx
 
 logger = logging.getLogger(__name__)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_METRICS_PATH = Path(__file__).resolve().parent.parent / "metrics.jsonl"
+
 
 
 class LLMCallError(Exception):
@@ -49,6 +53,36 @@ def get_last_call_metrics() -> CallMetrics | None:
 def _set_last_call_metrics(metrics: CallMetrics | None) -> None:
     global _last_call_metrics
     _last_call_metrics = metrics
+
+
+def persist_call_metrics(
+    model: str,
+    elapsed_ms: float,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    total_tokens: int | None,
+    cost: float | None,
+    metrics_path: Path | None = None,
+) -> dict[str, Any]:
+    """
+    Append OpenRouter call metrics to metrics.jsonl (Master §5.4).
+    Logs elapsed_ms, actual tokens, and actual cost. Never logs keys, headers, or PII.
+    Missing metrics are written as null rather than invented.
+    """
+    target_path = metrics_path or DEFAULT_METRICS_PATH
+    record: dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "elapsed_ms": round(elapsed_ms, 2),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cost": cost,
+    }
+    with open(target_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    return record
+
 
 
 def sanitize_secret(text: str) -> str:
@@ -214,6 +248,14 @@ async def call_openrouter(
         cost=float(cost_val) if cost_val is not None else None,
     )
     _set_last_call_metrics(metrics)
+    persist_call_metrics(
+        model=model,
+        elapsed_ms=metrics.elapsed_ms,
+        prompt_tokens=metrics.prompt_tokens,
+        completion_tokens=metrics.completion_tokens,
+        total_tokens=metrics.total_tokens,
+        cost=metrics.cost,
+    )
 
     logger.debug(
         "OpenRouter call succeeded (model=%s, elapsed_ms=%.2f, prompt_tokens=%s, completion_tokens=%s)",
