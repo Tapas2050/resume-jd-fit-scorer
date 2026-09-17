@@ -1,0 +1,7 @@
+criteria_weights:
+  required_skill: 3
+  years_experience: 2
+  domain_background: 2
+  education: 1
+  nice_to_have: 1
+fallback_weight: 1   # used when a criterion isn't in the map above
