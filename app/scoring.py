@@ -197,3 +197,16 @@ async def score_criteria(
             f"Both primary and fallback models failed criterion scoring. "
             f"Primary ('{primary}'): {primary_error}. Fallback ('{fallback}'): {fallback_exc}"
         ) from fallback_exc
+
+
+def weighted_overall(criteria_scores: list[CriterionScore]) -> float:
+    """
+    Deterministic weighted sum calculation (Master §2.2 Step 6, §4.5).
+    Pure Python, non-LLM dependent.
+    Formula: Σ(score × weight) / Σ(weight)
+    """
+    total_weight = sum(c.weight for c in criteria_scores)
+    if total_weight == 0:
+        return 0.0
+    return sum(c.score * c.weight for c in criteria_scores) / total_weight
+
