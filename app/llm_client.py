@@ -15,6 +15,26 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_METRICS_PATH = Path(__file__).resolve().parent.parent / "metrics.jsonl"
 
 
+def get_openrouter_url() -> str:
+    """
+    Resolve the OpenRouter chat completions endpoint from environment or default.
+    Supports:
+    - OPENROUTER_API_URL / LLM_API_URL (full endpoint)
+    - LLM_BASE_URL / OPENROUTER_BASE_URL (base URL, appends /chat/completions)
+    - Default fallback constant: https://openrouter.ai/api/v1/chat/completions
+    """
+    full_url = (os.getenv("OPENROUTER_API_URL") or os.getenv("LLM_API_URL") or "").strip().strip('"\'')
+    if full_url:
+        return full_url
+
+    base_url = (os.getenv("LLM_BASE_URL") or os.getenv("OPENROUTER_BASE_URL") or "").strip().strip('"\'').rstrip("/")
+    if base_url:
+        return f"{base_url}/chat/completions" if not base_url.endswith("/chat/completions") else base_url
+
+    return OPENROUTER_API_URL
+
+
+
 
 class LLMCallError(Exception):
     """Exception raised when an OpenRouter LLM call fails."""
@@ -107,6 +127,7 @@ def get_llm_config() -> dict[str, Any]:
         "fallback_model": os.getenv("FALLBACK_MODEL", "").strip(),
         "temperature": float(os.getenv("LLM_TEMPERATURE", "0")),
         "timeout_seconds": float(os.getenv("LLM_TIMEOUT_SECONDS", "15")),
+        "api_url": get_openrouter_url(),
     }
 
 
@@ -187,11 +208,12 @@ async def call_openrouter(
         payload["response_format"] = resp_format
 
     start_time = time.perf_counter()
+    endpoint_url = get_openrouter_url()
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                OPENROUTER_API_URL,
+                endpoint_url,
                 headers=headers,
                 json=payload,
             )

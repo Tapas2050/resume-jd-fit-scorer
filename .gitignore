@@ -24,6 +24,7 @@ htmlcov/
 # Local storage and metrics (Master §4.7, §5.4)
 runs.jsonl
 metrics.jsonl
+calibration_data/
 
 # IDE and OS files
 .idea/
@@ -32,3 +33,6 @@ metrics.jsonl
 *.swo
 .DS_Store
 Thumbs.db
+
+
+Resume_JD_Fit_Scorer_MASTER.md
