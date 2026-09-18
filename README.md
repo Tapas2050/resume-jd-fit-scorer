@@ -121,7 +121,7 @@ All runtime settings are managed via environment variables in `.env` (git-ignore
 | `LLM_MODEL` | Primary open-source model identifier | `nvidia/nemotron-3-ultra-550b-a55b:free` |
 | `FALLBACK_MODEL` | Fallback open-source model identifier | `nvidia/nemotron-3.5-lightning:free` |
 | `LLM_TEMPERATURE` | Sampling temperature (`0` for determinism) | `0` |
-| `LLM_TIMEOUT_SECONDS` | Network timeout for OpenRouter calls (Master §2.5) | `15` |
+| `LLM_TIMEOUT_SECONDS` | Network timeout for OpenRouter calls (Master §2.5 baseline for free-tier setup) | `45` |
 
 ### Externalized Scoring Weights (`config/weights.yaml`)
 Business weights are separated from code logic:

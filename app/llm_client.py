@@ -126,7 +126,7 @@ def get_llm_config() -> dict[str, Any]:
         "primary_model": os.getenv("LLM_MODEL", "").strip(),
         "fallback_model": os.getenv("FALLBACK_MODEL", "").strip(),
         "temperature": float(os.getenv("LLM_TEMPERATURE", "0")),
-        "timeout_seconds": float(os.getenv("LLM_TIMEOUT_SECONDS", "15")),
+        "timeout_seconds": float(os.getenv("LLM_TIMEOUT_SECONDS", "45")),
         "api_url": get_openrouter_url(),
     }
 
