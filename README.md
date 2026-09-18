@@ -1,222 +1,177 @@
-# Resume ↔ Job-Description Fit Scorer
+# 🎯 Resume ↔ Job-Description Fit Scorer
 
-Deterministic, recruiter-actionable candidate fit evaluation between a Job Description (JD) and a Candidate Resume using FastAPI, Pydantic v2, OpenRouter, and local privacy-preserving storage.
+**A deterministic, recruiter-actionable candidate-fit evaluator that scores a resume against a job description criterion-by-criterion — not one opaque LLM number — built on FastAPI, Pydantic v2, and OpenRouter.**
 
 ---
 
-## Overview
+## 🧭 Business Context
 
-The **Resume ↔ Job-Description Fit Scorer** evaluates candidate resumes against job descriptions by decomposing the evaluation into discrete, independently scored criteria rather than relying on a single, opaque LLM score. 
+Recruiters and hiring managers routinely get a single "match %" from resume-screening tools with no way to see *why*. That number can't be audited, can't be explained to a candidate, and can't be trusted for anything high-stakes.
 
-### Core Architecture & Pipeline
+**🎯 Goal:** decompose JD-vs-resume fit into independently scored, independently weighted, independently explained criteria — so every number on the page has a reason attached to it.
+
+---
+
+## 🛠️ Technologies Used
+
+| Category | Tools |
+|---|---|
+| Language | Python ≥ 3.11 |
+| Backend / API | FastAPI, Uvicorn, `python-multipart` |
+| Validation | Pydantic v2 |
+| LLM Provider | OpenRouter (open-source/openly-licensed models, primary + fallback) |
+| HTTP Client | httpx |
+| Parsing | PyMuPDF (PDF), native Python (TXT) |
+| Config | PyYAML (`config/weights.yaml`), `python-dotenv` (`.env`) |
+| Testing | pytest |
+| Tooling | uv |
+
+---
+
+## 🔄 Project Workflow
 
 ```
-Client POST /score (JD text + Resume PDF/TXT)
-  │
-  ├── 1. Resume Parser (PyMuPDF / direct text)
-  │      └── Validates file extension, %PDF- magic bytes, and 5MB size limit
-  │
-  ├── 2. Caching & Idempotency Layer
-  │      └── Computes SHA-256(JD) and SHA-256(Resume); returns cached ScoreResponse if identical
-  │
-  ├── 3. LLM Call #1: Criteria Extraction (Primary -> Fallback -> Fail)
-  │      └── Extracts discrete criteria {name, description, weight_hint} from delimited JD
-  │
-  ├── 4. Config-Driven Weights
-  │      └── Resolves criterion weights from config/weights.yaml (externalized business logic)
-  │
-  ├── 5. LLM Call #2: Batched Criterion Scoring (Primary -> Fallback -> Fail)
-  │      └── Evaluates all criteria against resume text in ONE batched call with 0-100 rubric
-  │
-  ├── 6. Security & Output Sanity Check
-  │      └── Flags suspicious=true if score is 100 without evidence tokens; enforces prompt isolation
-  │
-  ├── 7. Deterministic Weighted Aggregation
-  │      └── Pure Python calculation: overall = Σ(score × weight) / Σ(weight)
-  │
-  ├── 8. Instrumentation & PII-Safe Local Persistence
-  │      └── Logs latency/tokens/cost to metrics.jsonl; stores hashes & scores to runs.jsonl
-  │
-  └── 9. Structured JSON Response (ScoreResponse)
-```
-
----
-
-## Key Features
-
-1. **Deterministic Aggregation**: The overall score is calculated purely in Python ($\sum (score \times weight) / \sum weight$), preventing arithmetic hallucinations from the LLM.
-2. **Fixed Scoring Rubric**: Prompt anchors at `0 = Absent`, `50 = Partial / Adjacent`, and `100 = Explicit Match` paired with `temperature = 0` ensure consistent scoring across candidates.
-3. **Primary → Fallback → Fail Resiliency**: Single attempt per model across primary and fallback endpoints. If both fail, returns a typed HTTP 502 error without runaway retries.
-4. **Security & Prompt-Injection Defense**: Inputs are strictly delimited (`<<<JD_START>>>` and `<<<RESUME_START>>>`). An output sanity check flags scores of 100 that lack evidence citations (`suspicious: true`) without silently tampering with scores.
-5. **PII-Safe Local Storage**: Resumes are never stored in raw text. Only cryptographic SHA-256 digests, timestamps, run IDs, and score metadata are persisted to `runs.jsonl`.
-6. **Local Caching**: Identical `(JD, resume)` pairs return cached results immediately, avoiding redundant LLM latency and cost.
-7. **Comprehensive Instrumentation**: Automatically records wall-clock latency (ms), prompt tokens, completion tokens, total tokens, and cost to `metrics.jsonl`.
-
----
-
-## API Specification
-
-### `POST /score`
-Scores a candidate resume against a job description.
-
-* **Content-Type**: `multipart/form-data`
-* **Parameters**:
-  * `job_description` (string, required): Raw text of the job description.
-  * `resume_file` (file upload, required): Candidate resume in `.pdf` or `.txt` format (max 5 MB).
-
-#### Success Response (`HTTP 200 OK`)
-```json
-{
-  "overall_score": 85.94,
-  "criteria": [
-    {
-      "name": "5+ years backend software engineering experience",
-      "score": 50.0,
-      "weight": 3.0,
-      "reasoning": "Employment history shows 4 years of professional backend experience (2020-2022 and 2022-present). Career summary claims 6 years but not verifiable from listed roles.",
-      "suspicious": false
-    },
-    {
-      "name": "Relational database expertise (PostgreSQL) and query optimization",
-      "score": 100.0,
-      "weight": 2.5,
-      "reasoning": "Direct experience tuning PostgreSQL queries, managing schema updates, developing custom indexes, and achieving 35% reduction in 99th percentile response times.",
-      "suspicious": false
-    }
-  ],
-  "model_used": "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "run_id": "bf248055-7aab-4ba6-967b-e009bb36b31b"
-}
-```
-
-#### Error Responses
-* **`HTTP 413 Payload Too Large`**: File exceeds the 5 MB limit.
-  ```json
-  {"error": "file_too_large", "detail": "File size (6.10 MB) exceeds maximum allowed size (5.00 MB)."}
-  ```
-* **`HTTP 422 Unprocessable Entity`**: Unreadable, empty, scanned/image-only PDF, or unsupported file type.
-  ```json
-  {"error": "unparsable_resume", "detail": "PDF contains no extractable text (possibly scanned or image-only)."}
-  ```
-* **`HTTP 502 Bad Gateway`**: Upstream LLM provider failure across both primary and fallback models.
-  ```json
-  {"error": "llm_call_failed", "detail": "Both primary and fallback models failed criterion scoring."}
-  ```
-
-### Utility Endpoints
-* `GET /health`: Health check returning service status (`{"status": "ok", "app": "resume-jd-fit-scorer"}`).
-* `GET /`: Root verification endpoint.
-
----
-
-## Configuration
-
-All runtime settings are managed via environment variables in `.env` (git-ignored, template in `.env.example`):
-
-| Variable | Description | Default / Example |
-| :--- | :--- | :--- |
-| `OPENROUTER_API_KEY` | OpenRouter authentication key | `sk-or-v1-...` |
-| `OPENROUTER_API_URL` | Full Chat Completions API endpoint | `https://openrouter.ai/api/v1/chat/completions` |
-| `LLM_BASE_URL` | Base provider URL (optional alternative) | `https://openrouter.ai/api/v1` |
-| `LLM_MODEL` | Primary open-source model identifier | `nvidia/nemotron-3-ultra-550b-a55b:free` |
-| `FALLBACK_MODEL` | Fallback open-source model identifier | `nvidia/nemotron-3.5-lightning:free` |
-| `LLM_TEMPERATURE` | Sampling temperature (`0` for determinism) | `0` |
-| `LLM_TIMEOUT_SECONDS` | Network timeout for OpenRouter calls (Master §2.5 baseline for free-tier setup) | `45` |
-
-### Externalized Scoring Weights (`config/weights.yaml`)
-Business weights are separated from code logic:
-```yaml
-criteria_weights:
-  required_skill: 3.0
-  years_experience: 2.5
-  domain_background: 2.0
-  education: 1.0
-  nice_to_have: 1.0
-fallback_weight: 1.0
+Client
+  │  POST /score  (JD text + resume file)
+  ▼
+Resume Parser (PyMuPDF / plain text)
+  │  validates extension, %PDF- magic bytes, 5MB limit
+  ▼
+Cache Check (SHA-256 of JD + resume)
+  │  identical pair → return cached ScoreResponse, skip LLM entirely
+  ▼
+LLM Call #1 — Criteria Extraction        (Primary → Fallback → Fail)
+  │  delimited JD → discrete {name, description, weight_hint} list
+  ▼
+Weight Resolution
+  │  config/weights.yaml overrides LLM weight_hint per criterion
+  ▼
+LLM Call #2 — Batched Criterion Scoring  (Primary → Fallback → Fail)
+  │  one call scores ALL criteria against resume, 0–100 rubric
+  ▼
+Output Sanity Check
+  │  score=100 with no evidence tokens → suspicious: true
+  ▼
+Deterministic Weighted Aggregation
+  │  pure Python: Σ(score × weight) / Σ(weight) — no LLM arithmetic
+  ▼
+Instrumentation + PII-Safe Persistence
+  │  latency/tokens/cost → metrics.jsonl · hashes+scores only → runs.jsonl
+  ▼
+Structured JSON Response (ScoreResponse)
 ```
 
 ---
 
-## Installation & Setup
+## ✨ Features / Highlights
 
-### Prerequisites
-* Python `>= 3.11`
-* [uv](https://docs.astral.sh/uv/) (recommended) or standard `pip`
+- 🧮 **Deterministic aggregation** — the overall score is `Σ(score × weight) / Σ(weight)`, computed in plain Python, never delegated to the LLM. Removes a whole class of arithmetic hallucination.
+- 📏 **Fixed scoring rubric + temperature 0** — anchors at `0 = Absent`, `50 = Partial/Adjacent`, `100 = Explicit Match`, so two near-duplicate resumes land close together instead of drifting on model mood.
+- 🔁 **Primary → Fallback → Fail resiliency** — one attempt per model, two models max, then a typed `502`. No silent retry storms.
+- 🛡️ **Prompt-injection defense** — JD and resume text are wrapped in explicit delimiters (`<<<JD_START>>>`, `<<<RESUME_START>>>`); any `score: 100` with no supporting evidence in the reasoning gets flagged `suspicious: true` rather than silently trusted.
+- 🔒 **PII-safe local storage** — `runs.jsonl` stores SHA-256 hashes, timestamps, and scores only. Raw resume text never touches disk.
+- ⚡ **Local caching** — identical `(JD, resume)` pairs return instantly from cache, zero repeat LLM cost.
+- 📊 **Built-in instrumentation** — every LLM call logs latency, prompt/completion/total tokens, and cost to `metrics.jsonl`.
 
-### 1. Clone & Install
+---
+
+## 📈 Calibration & Metrics Results
+
+A live-LLM calibration run on OpenRouter, two near-duplicate strong resumes (A, B) and one deliberately weak resume (C), same JD:
+
+| Resume | Overall Score | Note |
+|---|---|---|
+| A — Baseline Strong | **98.18** | |
+| B — Near-Duplicate of A | **85.94** | Drift vs A: **12.24 pts** (spec ceiling: ≤ 40 → **PASS**) |
+| C — Deliberately Weak | **0.00** | Separation margin from A: **98.18 pts** |
+
+**Tracked across 6 real calls:** 117,070.94 ms total latency (avg 19.51s/call) · 11,688 tokens (4,462 prompt / 7,226 completion) · criterion-scoring calls accounted for **68.03%** of completion tokens — the evidence-reasoning step, not extraction, drives most of the generation cost. Full write-up in [`docs/explanation.md`](docs/explanation.md).
+
+---
+
+## 📁 Project Structure
+
+```
+resume-jd-fit-scorer/
+├── app/
+│   ├── main.py             # FastAPI app, /score /health / routes, pipeline orchestration
+│   ├── models.py           # Pydantic schemas: Criterion, CriterionScore, ScoreResponse, ErrorResponse
+│   ├── resume_parser.py    # PyMuPDF/TXT extraction, magic-byte + size validation
+│   ├── llm_client.py       # OpenRouter wrapper, Primary→Fallback→Fail sequencing
+│   ├── extraction.py       # LLM Call #1 — JD to discrete criteria
+│   ├── scoring.py          # LLM Call #2 — batched scoring + suspicious-score check
+│   ├── config_loader.py    # weights.yaml loading + per-criterion weight resolution
+│   ├── metrics.py          # latency/token/cost instrumentation → metrics.jsonl
+│   └── storage.py          # PII-safe run persistence + cache lookup → runs.jsonl
+├── config/
+│   └── weights.yaml        # scoring weights ONLY — no runtime config mixed in
+├── docs/
+│   └── explanation.md      # design-decision, failure, metric, and next-steps write-up
+├── tests/                  # pytest suite — network calls mocked, deterministic
+├── .env.example            # OPENROUTER_API_KEY, LLM_MODEL, FALLBACK_MODEL, etc.
+├── pyproject.toml
+└── requirements.txt
+```
+
+---
+
+## ⚙️ Setup
+
 ```bash
 git clone https://github.com/Tapas2050/resume-jd-fit-scorer.git
 cd resume-jd-fit-scorer
 
-# Install dependencies using uv
+# using uv (recommended)
 uv sync
-```
 
-Or using standard Python venv:
-```bash
+# or standard venv
 python -m venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On Unix:
-source .venv/bin/activate
-
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
 ```bash
 cp .env.example .env
-# Edit .env and supply your OPENROUTER_API_KEY
-```
+# edit .env — set OPENROUTER_API_KEY
 
-### 3. Run Development Server
-```bash
 uv run uvicorn app.main:app --reload --port 8000
+# Swagger UI: http://localhost:8000/docs
 ```
-Interactive Swagger documentation is available at `http://localhost:8000/docs`.
-
----
-
-## Testing & Verification
-
-Automated testing is executed using `pytest`. Automated test suites mock external network calls to ensure fast, deterministic, and isolated execution without consuming API credits.
 
 ```bash
-# Run complete test suite (99 tests)
-uv run pytest -v
+uv run pytest -v   # full suite mocks all network calls — no API credits consumed
 ```
 
-### Test Coverage Summary:
-* `tests/test_api_integration.py`: End-to-end `/score` pipeline, happy path, weight overrides, caching, and error paths.
-* `tests/test_extraction.py`: JD criteria extraction, schema validation, prompt injection defense, and retry sequencing.
-* `tests/test_scoring.py`: Batched scoring, 1-to-1 criteria validation, rubric enforcement, and deterministic math.
-* `tests/test_hardening.py`: 5MB limits, magic byte validation, PII safety, output sanity checks, and metrics recording.
-* `tests/test_metrics.py`: Metrics parsing, derived summaries calculation, missing/null value handling, and calibration metrics verification.
-* `tests/test_resume_parser.py`: PDF and TXT text extraction, scanned PDF detection, corruption handling.
-* `tests/test_models.py`: Pydantic model boundary constraints (0–100 score bounds, non-negative weights).
-* `tests/test_health.py`: Health and root endpoints.
+---
+
+## 📚 Concepts Used
+
+- Criterion-decomposed evaluation instead of single blended LLM scoring
+- Deterministic post-processing over stochastic LLM output (rubric-anchoring + pure-Python aggregation)
+- Resilient external-API integration: bounded retry, primary/fallback provider routing, typed error taxonomy
+- Prompt-injection isolation via explicit input delimiting
+- PII-minimization by design (hash-only persistence)
+- Content-addressed caching (SHA-256 of inputs) for idempotency and cost control
+- Config-driven business logic (externalized weights) vs. hardcoded rules
+- Async I/O hygiene — offloading blocking PDF parsing to a worker thread
 
 ---
 
-## Calibration & Metrics Results
+## 🔧 Known Gaps / Future Improvements
 
-In Phase 10, a controlled live-LLM calibration experiment was performed on OpenRouter with two genuinely near-duplicate strong resumes (Resume A and Resume B) and one deliberately weaker resume (Resume C) against the same Job Description:
-
-* **Resume A (Baseline Strong)**: Overall Score **`98.18`**
-* **Resume B (Near-Duplicate A)**: Overall Score **`85.94`**
-* **Drift ($|A - B|$)**: **`12.24 points`** (Master Requirement: $\le 40.0$ points $\implies$ **PASS**)
-* **Resume C (Deliberately Weaker)**: Overall Score **`0.00`** (Demonstrated clear separation margin of 98.18 points)
-
-### Tracked Metrics Summary (6 Real Calls)
-* **Total API Latency**: 117,070.94 ms (~117.07s, avg 19.51s per call)
-* **Total Tokens Processed**: 11,688 tokens (4,462 prompt tokens + 7,226 completion tokens)
-* **Key Finding**: Criterion-scoring calls generated **68.03%** (approx 68.0%) of all completion tokens (4,912 of 7,226 tokens), confirming that recruiter-actionable evidence reasoning is the primary driver of generation volume and latency.
-* Detailed analysis is documented in [`docs/explanation.md`](docs/explanation.md).
+- **Scanned/image-only PDFs**: no OCR layer — these return a clean `422` instead of a hallucinated read, by design, but OCR fallback is a real next step.
+- **English-only**: rubric anchors and extraction prompts aren't validated against non-English JDs/resumes.
+- **Free-tier model latency**: `:free` OpenRouter endpoints are subject to provider queueing — timeout is externally configured but not eliminated.
+- **No CI pipeline** yet — tests run locally/manually; no GitHub Actions workflow committed.
+- **No license file** — add one if this repo is meant for reuse.
 
 ---
 
-## Known Limitations
+## 👨‍💻 Author
 
-1. **Scanned / Image-Only PDFs**: PyMuPDF extracts embedded digital text. Scanned resumes without an OCR layer return an explicit HTTP 422 error rather than triggering expensive or hallucinated OCR inference.
-2. **Language**: Rubric anchors, criteria extraction prompts, and sanity checks are currently optimized for English language resumes and job postings.
-3. **Provider Latency & Rate Limits**: Free-tier OpenRouter endpoints (`:free`) are subject to provider queueing delays and upstream rate limits (mitigated by externalized timeout configuration and fallback routing).
+**Tapas** — Software Engineer, AI/ML & backend/full-stack.
+[github.com/Tapas2050](https://github.com/Tapas2050)
+
+---
+
+⭐ If you found this project useful, consider giving it a star!
